@@ -983,6 +983,184 @@ class StockDataCollector:
         else:
             print("Interpretation: Weak autocorrelation - near random walk behavior")
 
+    def compute_cross_correlation_window(self, ticker1: str, ticker2: str, start_date_str: str, max_lag: int = 30) -> Optional[Tuple[List[int], List[float], str]]:
+        """
+        Compute cross-lag correlation between two tickers from a specific start date to today.
+        """
+        filename1 = os.path.join(self.results_dir, f"{ticker1}.txt")
+        filename2 = os.path.join(self.results_dir, f"{ticker2}.txt")
+        if not os.path.exists(filename1) or not os.path.exists(filename2):
+            logger.warning(f"Data files not found for {ticker1} and {ticker2}")
+            return None
+        try:
+            start_date = datetime.strptime(start_date_str, "%m-%d-%Y")
+            end_date = datetime.now()
+            if start_date >= end_date:
+                logger.error(f"Start date {start_date_str} must be before today")
+                return None
+            # Read price data for both tickers
+            data1 = {}
+            data2 = {}
+            with open(filename1, 'r') as f:
+                for line in f:
+                    parts = line.strip().split(self.date_delimiter)
+                    if len(parts) >= 3:
+                        date_str = parts[1]
+                        price = float(parts[2])
+                        date_obj = datetime.strptime(date_str, "%m-%d-%Y")
+                        if start_date <= date_obj <= end_date:
+                            data1[date_obj] = price
+            with open(filename2, 'r') as f:
+                for line in f:
+                    parts = line.strip().split(self.date_delimiter)
+                    if len(parts) >= 3:
+                        date_str = parts[1]
+                        price = float(parts[2])
+                        date_obj = datetime.strptime(date_str, "%m-%d-%Y")
+                        if start_date <= date_obj <= end_date:
+                            data2[date_obj] = price
+            # Find common dates and sort
+            common_dates = sorted(set(data1.keys()) & set(data2.keys()))
+            if len(common_dates) < max_lag + 2:
+                logger.warning(f"Insufficient overlapping data for cross-correlation")
+                return None
+            # Align prices by common dates
+            prices1 = [data1[d] for d in common_dates]
+            prices2 = [data2[d] for d in common_dates]
+            # Calculate returns
+            returns1 = np.diff(prices1) / prices1[:-1] * 100
+            returns2 = np.diff(prices2) / prices2[:-1] * 100
+            # Now returns1 and returns2 are the same length
+            lags = list(range(-max_lag, max_lag + 1))
+            cross_corrs = []
+            for lag in lags:
+                if lag < 0:
+                    if abs(lag) < len(returns1):
+                        corr = np.corrcoef(returns1[:lag], returns2[-lag:])[0, 1]
+                        cross_corrs.append(corr)
+                    else:
+                        cross_corrs.append(np.nan)
+                elif lag == 0:
+                    corr = np.corrcoef(returns1, returns2)[0, 1]
+                    cross_corrs.append(corr)
+                else:
+                    if lag < len(returns2):
+                        corr = np.corrcoef(returns1[lag:], returns2[:-lag])[0, 1]
+                        cross_corrs.append(corr)
+                    else:
+                        cross_corrs.append(np.nan)
+            date_range = f"{common_dates[0].strftime('%m/%d/%Y')} to {common_dates[-1].strftime('%m/%d/%Y')}"
+            return lags, cross_corrs, date_range
+        except Exception as e:
+            logger.error(f"Error computing cross-correlation between {ticker1} and {ticker2}: {e}")
+            return None
+
+    def analyze_cross_correlation_window(self, ticker1: str, ticker2: str, start_date: str):
+        """
+        Analyze cross-lag correlation between two specific stocks from a start date to today.
+        Creates interactive plot and saves results.
+        
+        Args:
+            ticker1: First stock ticker symbol
+            ticker2: Second stock ticker symbol
+            start_date: Start date in MM-DD-YYYY format
+        """
+        result = self.compute_cross_correlation_window(ticker1, ticker2, start_date)
+        if not result:
+            logger.error(f"Could not compute cross-correlation between {ticker1} and {ticker2}")
+            return
+        
+        lags, cross_corrs, date_range = result
+        
+        # Create directory for cross-correlation analysis
+        cross_dir = os.path.join(self.results_dir, "cross_correlation_windows")
+        os.makedirs(cross_dir, exist_ok=True)
+        
+        # Create cross-correlation plot
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=lags, y=cross_corrs, mode='lines+markers', name=f'{ticker1} vs {ticker2}', line=dict(color='blue')))
+        fig.add_hline(y=0, line_dash='dash', line_color='black', opacity=0.3)
+        
+        # Add confidence intervals (approximate 95%)
+        valid_corrs = [x for x in cross_corrs if not np.isnan(x)]
+        n = len(valid_corrs)
+        if n > 0:
+            ci_upper = 1.96 * np.sqrt(n)  # Approximate 95 CI
+            ci_lower = -1.96 * np.sqrt(n)
+            fig.add_hline(y=ci_upper, line_dash='dot', line_color='red', opacity=0.5, 
+                         annotation_text="95% CI Upper")
+            fig.add_hline(y=ci_lower, line_dash='dot', line_color='red', opacity=0.5,
+                         annotation_text="95% CI Lower")
+        
+        fig.update_layout(
+            title=f'Cross-Correlation: {ticker1} vs {ticker2}<br><sub>{date_range}</sub>',
+            xaxis_title='Lag (days)',
+            yaxis_title='Cross-Correlation',
+            hovermode='x unified'
+        )
+        fig.update_xaxes(tickformat='d')
+        fig.update_yaxes(tickformat='.3f')
+        
+        # Add statistics annotation
+        if valid_corrs:
+            max_cross = max(valid_corrs)
+            min_cross = min(valid_corrs)
+            avg_cross = np.mean(valid_corrs)
+            
+            # Find maximum correlation and its lag
+            max_idx = np.argmax(valid_corrs)
+            max_lag = lags[max_idx]
+            
+            stats_text = f'Max: {max_cross:0.3f} (lag {max_lag})<br>Min: {min_cross:.3f}<br>Avg: {avg_cross:.3f}'
+            fig.add_annotation(
+                x=0.02, y=0.98,
+                text=stats_text,
+                showarrow=False,
+                xref='paper', yref='paper',
+                xanchor='left', yanchor='top',
+                bgcolor='lightgreen', bordercolor='lightgreen', borderwidth=1,
+                font=dict(size=12)
+            )
+        
+        # Save plot
+        plot_filename = os.path.join(cross_dir, f"{ticker1}_{ticker2}_{start_date.replace('-', '')}_crosscorrelation.html")
+        fig.write_html(plot_filename)
+        logger.info(f"Created cross-correlation plot for {ticker1} vs {ticker2}: {plot_filename}")
+        
+        # Save data to CSV
+        import csv
+        csv_filename = os.path.join(cross_dir, f"{ticker1}_{ticker2}_{start_date.replace('-', '')}_crosscorrelation.csv")
+        with open(csv_filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Lag (days)', 'Cross-Correlation'])
+            for lag, corr in zip(lags, cross_corrs):
+                writer.writerow([lag, corr if not np.isnan(corr) else ''])
+        
+        logger.info(f"Saved cross-correlation data to CSV: {csv_filename}")
+        
+        # Print summary
+        print(f"\n=== Cross-Correlation Analysis: {ticker1} vs {ticker2} ===\n")
+        print(f"DateRange: {date_range}")
+        print(f"Data Points: {len(valid_corrs)}")
+        print(f"Max Cross-Correlation: {max_cross:0.3f} at lag {max_lag}")
+        print(f"Min Cross-Correlation: {min_cross:.3f}")
+        print(f"Average Cross-Correlation: {avg_cross:.3f}")
+        
+        # Interpretation
+        if max_lag > 0:
+            print(f"Interpretation: {ticker2} leads {ticker1} by {max_lag} days")
+        elif max_lag < 0:
+            print(f"Interpretation: {ticker1} leads {ticker2} by {abs(max_lag)} days")
+        else:
+            print("Interpretation: Stocks move together simultaneously")
+        
+        if abs(max_cross) > 0.5:
+            print("Strong correlation detected")
+        elif abs(max_cross) > 0.3:
+            print("Moderate correlation detected")
+        else:
+            print("Weak correlation detected")
+
 def main():
     """
     Handle command line arguments and run the appropriate action.
@@ -998,10 +1176,14 @@ def main():
                        help='Delimiter between rows (default: newline)')
     parser.add_argument('--years-back', type=int, default=2, 
                        help='Years of historical data to fetch (default: 2)')
-    parser.add_argument('--action', choices=['init', 'update', 'diff', 'visualize', 'correlate', 'autocorr'], required=True,
-                       help='Action to perform: init (historical data), update (daily data), diff (daily differences), visualize (create charts), correlate (correlation analysis), or autocorr (autocorrelation analysis)')
+    parser.add_argument('--action', choices=['init', 'update', 'diff', 'visualize', 'correlate', 'autocorr', 'crosscorr'], required=True,
+                       help='Action to perform: init (historical data), update (daily data), diff (daily differences), visualize (create charts), correlate (correlation analysis), autocorr (autocorrelation analysis), or crosscorr (cross-correlation analysis)')
     parser.add_argument('--ticker', type=str, 
                        help='Specific ticker for autocorrelation analysis (required for autocorr action)')
+    parser.add_argument('--tickers', nargs=2, metavar=('TICKER1', 'TICKER2'),
+                       help='Two tickers for cross-correlation analysis (required for crosscorr action, e.g., --tickers AAPL GOOGL)')
+    parser.add_argument('--start-date', type=str, 
+                       help='Start date in MM-DD-YYYY format for cross-correlation analysis (required for crosscorr action)')
     parser.add_argument('--months-back', type=int, default=6,
                        help='Number of months to look back for autocorrelation (default: 6)')
     args = parser.parse_args()
@@ -1029,6 +1211,12 @@ def main():
             logger.error("--ticker is required for autocorrelation analysis")
             return
         collector.analyze_autocorrelation_window(args.ticker, args.months_back)
+    elif args.action == 'crosscorr':
+        if not args.tickers or not args.start_date:
+            logger.error("--tickers (two tickers) and --start-date are required for cross-correlation analysis")
+            return
+        ticker1, ticker2 = args.tickers
+        collector.analyze_cross_correlation_window(ticker1, ticker2, args.start_date)
 
 if __name__ == "__main__":
     main() 
