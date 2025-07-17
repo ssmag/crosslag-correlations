@@ -672,10 +672,11 @@ class StockDataCollector:
                     title=f'{ticker} Autocorrelation of Returns',
                     xaxis_title='Lag (days)',
                     yaxis_title='Autocorrelation',
-                    hovermode='x unified'
+                    hovermode='x unified',
+                    yaxis=dict(range=[-1, 1])
                 )
                 fig.update_xaxes(tickformat='d')
-                fig.update_yaxes(tickformat='.3f')
+                fig.update_yaxes(tickformat='.3f', range=[-1, 1])
                 
                 # Save plot
                 plot_filename = os.path.join(corr_dir, f"{ticker}_autocorrelation.html")
@@ -931,10 +932,11 @@ class StockDataCollector:
             title=f'{ticker} Autocorrelation of Returns (Last {months_back} Months)<br><sub>{date_range}</sub>',
             xaxis_title='Lag (days)',
             yaxis_title='Autocorrelation',
-            hovermode='x unified'
+            hovermode='x unified',
+            yaxis=dict(range=[-1, 1])
         )
         fig.update_xaxes(tickformat='d')
-        fig.update_yaxes(tickformat='.3f')
+        fig.update_yaxes(tickformat='.3f', range=[-1, 1])
         
         # Add statistics annotation
         max_autocorr = max(autocorrs) if autocorrs else 0
@@ -1059,58 +1061,39 @@ class StockDataCollector:
         """
         Analyze cross-lag correlation between two specific stocks from a start date to today.
         Creates interactive plot and saves results.
-        
-        Args:
-            ticker1: First stock ticker symbol
-            ticker2: Second stock ticker symbol
-            start_date: Start date in MM-DD-YYYY format
         """
         result = self.compute_cross_correlation_window(ticker1, ticker2, start_date)
         if not result:
             logger.error(f"Could not compute cross-correlation between {ticker1} and {ticker2}")
             return
-        
         lags, cross_corrs, date_range = result
-        
-        # Create directory for cross-correlation analysis
         cross_dir = os.path.join(self.results_dir, "cross_correlation_windows")
         os.makedirs(cross_dir, exist_ok=True)
-        
-        # Create cross-correlation plot
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=lags, y=cross_corrs, mode='lines+markers', name=f'{ticker1} vs {ticker2}', line=dict(color='blue')))
         fig.add_hline(y=0, line_dash='dash', line_color='black', opacity=0.3)
-        
-        # Add confidence intervals (approximate 95%)
         valid_corrs = [x for x in cross_corrs if not np.isnan(x)]
         n = len(valid_corrs)
         if n > 0:
-            ci_upper = 1.96 * np.sqrt(n)  # Approximate 95 CI
+            ci_upper = 1.96 * np.sqrt(n)
             ci_lower = -1.96 * np.sqrt(n)
-            fig.add_hline(y=ci_upper, line_dash='dot', line_color='red', opacity=0.5, 
-                         annotation_text="95% CI Upper")
-            fig.add_hline(y=ci_lower, line_dash='dot', line_color='red', opacity=0.5,
-                         annotation_text="95% CI Lower")
-        
+            fig.add_hline(y=ci_upper, line_dash='dot', line_color='red', opacity=0.5, annotation_text="95% CI Upper")
+            fig.add_hline(y=ci_lower, line_dash='dot', line_color='red', opacity=0.5, annotation_text="95% CI Lower")
         fig.update_layout(
             title=f'Cross-Correlation: {ticker1} vs {ticker2}<br><sub>{date_range}</sub>',
             xaxis_title='Lag (days)',
             yaxis_title='Cross-Correlation',
-            hovermode='x unified'
+            hovermode='x unified',
+            yaxis=dict(range=[-1, 1])
         )
         fig.update_xaxes(tickformat='d')
-        fig.update_yaxes(tickformat='.3f')
-        
-        # Add statistics annotation
+        fig.update_yaxes(tickformat='.3f', range=[-1, 1])
         if valid_corrs:
             max_cross = max(valid_corrs)
             min_cross = min(valid_corrs)
             avg_cross = np.mean(valid_corrs)
-            
-            # Find maximum correlation and its lag
             max_idx = np.argmax(valid_corrs)
             max_lag = lags[max_idx]
-            
             stats_text = f'Max: {max_cross:0.3f} (lag {max_lag})<br>Min: {min_cross:.3f}<br>Avg: {avg_cross:.3f}'
             fig.add_annotation(
                 x=0.02, y=0.98,
@@ -1121,13 +1104,9 @@ class StockDataCollector:
                 bgcolor='lightgreen', bordercolor='lightgreen', borderwidth=1,
                 font=dict(size=12)
             )
-        
-        # Save plot
         plot_filename = os.path.join(cross_dir, f"{ticker1}_{ticker2}_{start_date.replace('-', '')}_crosscorrelation.html")
         fig.write_html(plot_filename)
         logger.info(f"Created cross-correlation plot for {ticker1} vs {ticker2}: {plot_filename}")
-        
-        # Save data to CSV
         import csv
         csv_filename = os.path.join(cross_dir, f"{ticker1}_{ticker2}_{start_date.replace('-', '')}_crosscorrelation.csv")
         with open(csv_filename, 'w', newline='') as f:
@@ -1135,25 +1114,19 @@ class StockDataCollector:
             writer.writerow(['Lag (days)', 'Cross-Correlation'])
             for lag, corr in zip(lags, cross_corrs):
                 writer.writerow([lag, corr if not np.isnan(corr) else ''])
-        
         logger.info(f"Saved cross-correlation data to CSV: {csv_filename}")
-        
-        # Print summary
         print(f"\n=== Cross-Correlation Analysis: {ticker1} vs {ticker2} ===\n")
         print(f"DateRange: {date_range}")
         print(f"Data Points: {len(valid_corrs)}")
         print(f"Max Cross-Correlation: {max_cross:0.3f} at lag {max_lag}")
         print(f"Min Cross-Correlation: {min_cross:.3f}")
         print(f"Average Cross-Correlation: {avg_cross:.3f}")
-        
-        # Interpretation
         if max_lag > 0:
             print(f"Interpretation: {ticker2} leads {ticker1} by {max_lag} days")
         elif max_lag < 0:
             print(f"Interpretation: {ticker1} leads {ticker2} by {abs(max_lag)} days")
         else:
             print("Interpretation: Stocks move together simultaneously")
-        
         if abs(max_cross) > 0.5:
             print("Strong correlation detected")
         elif abs(max_cross) > 0.3:
